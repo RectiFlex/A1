@@ -1,5 +1,6 @@
 import { ChatRequestBody, TogetherAIResponse } from '../src/types/together-ai'
 import { getUserBySessionToken, getUserMessageCount, createMessage } from '../src/db'
+import { checkRateLimit } from '../src/middleware/rateLimit'
 
 export const config = {
   runtime: 'edge'
@@ -29,7 +30,24 @@ export default async function handler(req: Request) {
       }
     }
 
+    // Rate limiting
+    const rateLimitResponse = await checkRateLimit(user?.email || req.headers.get('x-forwarded-for') || 'anonymous')
+    if (!rateLimitResponse.success) {
+      return new Response(
+        JSON.stringify({ error: 'Rate limit exceeded' }),
+        { status: 429, headers: { 'Content-Type': 'application/json' } }
+      )
+    }
+
     const body: ChatRequestBody = await req.json()
+
+    // Input validation
+    if (!body.messages || !Array.isArray(body.messages) || body.messages.length === 0) {
+      return new Response(
+        JSON.stringify({ error: 'Invalid request body' }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } }
+      )
+    }
 
     const response = await fetch('https://api.together.xyz/v1/chat/completions', {
       method: 'POST',
@@ -61,7 +79,10 @@ export default async function handler(req: Request) {
 
     return new Response(JSON.stringify(data), {
       headers: {
-        'Content-Type': 'application/json'
+        'Content-Type': 'application/json',
+        'X-RateLimit-Limit': rateLimitResponse.limit.toString(),
+        'X-RateLimit-Remaining': rateLimitResponse.remaining.toString(),
+        'X-RateLimit-Reset': rateLimitResponse.reset.toString(),
       },
     })
   } catch (error) {
